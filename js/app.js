@@ -157,7 +157,7 @@ function tableau(res, ids) {
     const p = M.personne(ids[i]);
     return `<tr class="cliquable" data-id="${ids[i]}"><td><span class="mini">${avatarSVG(p)}</span></td>${cellules}</tr>`;
   }).join("");
-  return `<div class="tableau-conteneur"><table class="tableau"><thead><tr>${entetes}</tr></thead><tbody>${lignes}</tbody></table></div>`;
+  return `<div class="tableau-conteneur"><table class="tableau${ids ? " avec-buste" : ""}"><thead><tr>${entetes}</tr></thead><tbody>${lignes}</tbody></table></div>`;
 }
 
 function changerVue(v) {

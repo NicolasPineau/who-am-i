@@ -142,10 +142,18 @@ code, pre, textarea { font-family: var(--mono); }
 .tuile .nom small { display: block; font-weight: 400; color: var(--doux); }
 .vide { padding: 40px; text-align: center; color: var(--doux); background: var(--carte); border-radius: var(--rayon); }
 
-.tableau-conteneur { overflow-x: auto; background: var(--carte); border-radius: var(--rayon); box-shadow: var(--ombre); }
+/* Hauteur limitée : la barre de défilement horizontale reste visible à l'écran */
+.tableau-conteneur { overflow: auto; max-height: 70vh; background: var(--carte); border-radius: var(--rayon); box-shadow: var(--ombre); }
+.tableau-conteneur::-webkit-scrollbar { height: 12px; width: 12px; }
+.tableau-conteneur::-webkit-scrollbar-thumb { background: #c9c2b3; border-radius: 6px; border: 3px solid var(--carte); }
+.tableau-conteneur::-webkit-scrollbar-track { background: var(--fond); }
 table.tableau { border-collapse: collapse; width: 100%; font-size: .92rem; }
 .tableau th, .tableau td { padding: 7px 10px; border-bottom: 1px solid var(--fond); text-align: left; white-space: nowrap; }
-.tableau th { background: #faf8f3; font-family: var(--mono); font-size: .82rem; position: sticky; top: 0; }
+.tableau th { background: #faf8f3; font-family: var(--mono); font-size: .82rem; position: sticky; top: 0; z-index: 2; }
+/* La 1re colonne (buste, ou nom de l'élève) reste visible pendant le défilement horizontal */
+.tableau.avec-buste td:first-child, .tableau.avec-buste th:first-child,
+.tableau.res td:first-child, .tableau.res th:first-child { position: sticky; left: 0; background: var(--carte); z-index: 1; }
+.tableau.avec-buste th:first-child, .tableau.res th:first-child { z-index: 3; background: #faf8f3; }
 .tableau td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .tableau tr.cliquable { cursor: pointer; }
 .tableau tr.cliquable:hover td { background: #fbf7ee; }
