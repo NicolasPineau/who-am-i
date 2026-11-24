@@ -143,6 +143,22 @@ function texte(v) {
   return String(v);
 }
 
+// Fonctions MariaDB qui renvoient toujours un nombre
+const FONCTIONS_NUMERIQUES = new Set(["YEAR", "MONTH", "DAY", "DAYOFMONTH", "DAYOFWEEK", "COUNT", "SUM", "AVG",
+  "LENGTH", "CHAR_LENGTH", "CHARACTER_LENGTH", "ROUND", "FLOOR", "CEIL", "CEILING", "ABS", "MOD", "TRUNCATE",
+  "DATEDIFF", "TIMESTAMPDIFF", "LOCATE", "INSTR", "SIGN", "POW", "POWER", "SQRT"]);
+
+// Nom (en majuscules) de la fonction dont la parenthèse fermante est jetons[k]
+function nomFonctionFermee(jetons, k) {
+  let prof = 0;
+  for (let i = k; i >= 0; i--) {
+    const j = jetons[i];
+    if (j.t === "op" && j.v === ")") prof++;
+    if (j.t === "op" && j.v === "(") { prof--; if (prof === 0) return jetons[i - 1]?.t === "ident" ? jetons[i - 1].v.toUpperCase() : ""; }
+  }
+  return "";
+}
+
 // Fonctions à nombre d'arguments variable (déclarées une fois par nombre d'arguments)
 const ARITES = { mdb_concat: [1, 2, 3, 4, 5, 6, 7, 8], mdb_locate: [2, 3] };
 
@@ -363,7 +379,19 @@ export function traduire(sqlMariaDB) {
     const suivant = jetons[k + 1];
     const precedent = jetons[k - 1];
     const parenthese = suivant && suivant.t === "op" && suivant.v === "(";
-    if (j.t === "chaine") { sortie.push(echapper(j.v)); continue; }
+    if (j.t === "chaine") {
+      // MONTH(d) = '07' : en MariaDB, la chaîne est convertie en nombre pour être
+      // comparée à un nombre. SQLite ne le fait pas pour un résultat de fonction.
+      const avant2 = jetons[k - 2];
+      const comparaison = precedent && precedent.t === "op" && ["=", "<>", "!=", "<", ">", "<=", ">=", "<=>"].includes(precedent.v);
+      if (comparaison && avant2 && avant2.t === "op" && avant2.v === ")" && /^\s*-?\d+(\.\d+)?\s*$/.test(j.v)
+          && FONCTIONS_NUMERIQUES.has(nomFonctionFermee(jetons, k - 2))) {
+        sortie.push(String(Number(j.v)));
+        continue;
+      }
+      sortie.push(echapper(j.v));
+      continue;
+    }
     if (j.t === "nombre") { sortie.push(j.v); continue; }
     if (j.t === "op") {
       if (j.v === "||") { sortie.push("OR"); continue; }
@@ -443,6 +471,7 @@ function messageErreur(e, requete) {
     const pres = pos >= 0 ? requete.slice(pos, pos + 30).split("\n")[0] : r[1];
     return new ErreurSQL(`Erreur de syntaxe près de « ${pres} ».`, "1064");
   }
+  if (/row value misused|row value/.test(m)) return new ErreurSQL("Operand should contain 1 column(s) — une virgule est mal placée. Attention : en SQL, les décimales s'écrivent avec un point (1.70 et pas 1,70).", "1241");
   if (/incomplete input/.test(m)) return new ErreurSQL("Erreur de syntaxe : la requête est incomplète (il manque quelque chose à la fin).", "1064");
   if ((r = m.match(/no such column: (.*)/))) return new ErreurSQL(`Colonne inconnue « ${r[1]} ». Vérifie l'orthographe (clique sur ⓘ pour voir les colonnes).`, "1054");
   if ((r = m.match(/no such table: (.*)/))) return new ErreurSQL(`La table « ${r[1]} » n'existe pas. La seule table est « personnes ».`, "1146");
@@ -481,7 +510,7 @@ export async function initialiser() {
   const ci = " COLLATE NOCASE";
   db.run(`CREATE TABLE personnes (
     id INTEGER PRIMARY KEY, prenom TEXT${ci}, nom TEXT${ci}, genre TEXT${ci},
-    date_naissance TEXT, age INTEGER, taille REAL, cheveux TEXT${ci}, yeux TEXT${ci},
+    date_naissance NUMERIC, age INTEGER, taille REAL, cheveux TEXT${ci}, yeux TEXT${ci},
     lunettes INTEGER, barbe INTEGER, chapeau INTEGER, ville TEXT${ci}, profession TEXT${ci},
     email TEXT${ci}, animal TEXT${ci}, permis INTEGER)`);
   const ins = db.prepare("INSERT INTO personnes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
