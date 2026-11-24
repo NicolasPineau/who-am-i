@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Qui est-ce ? SQL</title>
+  <meta name="description" content="Un jeu pour apprendre la requête SELECT en SQL (syntaxe MariaDB).">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%95%B5%EF%B8%8F%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/style.css">
+  <script src="vendor/sql-wasm.js"></script>
+</head>
+<body>
+  <header class="entete">
+    <div class="logo">Qui est-ce&nbsp;? <span>SQL</span></div>
+    <nav class="onglets" role="tablist">
+      <button role="tab" data-onglet="jeu" aria-selected="true">Jeu</button>
+      <button role="tab" data-onglet="memo">Mémo SQL</button>
+      <button role="tab" data-onglet="prof">Prof</button>
+    </nav>
+    <div class="statut">
+      <span id="badge-mode" class="badge">Mode libre</span>
+      <button id="btn-eleve" class="puce-eleve" hidden></button>
+    </div>
+  </header>
+
+  <!-- ============ ONGLET JEU ============ -->
+  <main id="onglet-jeu" class="onglet">
+    <section id="bandeau-question" class="bandeau" hidden>
+      <div class="bandeau-haut">
+        <span id="q-numero" class="q-numero"></span>
+        <span id="q-notion" class="q-notion"></span>
+        <span id="q-chrono" class="chrono"></span>
+      </div>
+      <p id="q-consigne" class="consigne"></p>
+      <p id="q-retour" class="retour"></p>
+    </section>
+
+    <section id="bandeau-correction" class="bandeau correction" hidden>
+      <div class="bandeau-haut">
+        <span id="c-numero" class="q-numero"></span>
+        <span id="c-notion" class="q-notion"></span>
+        <span class="chrono-off">Correction</span>
+      </div>
+      <p id="c-consigne" class="consigne"></p>
+      <div class="c-grille">
+        <div>
+          <h4>Une solution</h4>
+          <pre id="c-solution" class="code"></pre>
+          <button id="c-essayer-solution" class="btn-lien">Afficher son résultat ↓</button>
+        </div>
+        <div>
+          <h4>Ta dernière requête</h4>
+          <pre id="c-mienne" class="code"></pre>
+          <button id="c-essayer-mienne" class="btn-lien">Afficher son résultat ↓</button>
+        </div>
+      </div>
+      <p id="c-explication" class="explication"></p>
+    </section>
+
+    <section id="bandeau-fin" class="bandeau fin" hidden>
+      <p class="consigne">Évaluation terminée&nbsp;! <span id="fin-bilan"></span></p>
+      <p class="retour">Tu peux continuer à faire des requêtes librement en attendant la correction.</p>
+    </section>
+
+    <section class="zone-requete">
+      <label for="requete" class="sr-only">Requête SQL</label>
+      <div class="prompt">
+        <span class="chevron" aria-hidden="true">MariaDB&nbsp;&gt;</span>
+        <textarea id="requete" spellcheck="false" autocapitalize="off" autocomplete="off" rows="3">SELECT * FROM personnes;</textarea>
+      </div>
+      <div class="actions">
+        <button id="btn-ok" class="btn btn-principal">OK</button>
+        <button id="btn-structure" class="btn btn-icone" aria-expanded="false" title="Afficher la structure de la table">ⓘ <span>Structure</span></button>
+        <button id="btn-reinit" class="btn btn-discret" title="Revenir à SELECT * FROM personnes;">Réinitialiser</button>
+        <span class="aide-clavier">Ctrl + Entrée pour exécuter</span>
+      </div>
+      <div id="structure" class="structure" hidden>
+        <p class="structure-titre">Table <code>personnes</code> — clique sur une colonne pour l'insérer dans la requête</p>
+        <div id="colonnes" class="colonnes"></div>
+      </div>
+      <div id="message" class="message" role="status" aria-live="polite"></div>
+    </section>
+
+    <section class="zone-resultat">
+      <div class="barre-resultat">
+        <span id="compteur"></span>
+        <div class="bascule" role="group" aria-label="Affichage">
+          <button id="vue-grille" class="actif" aria-pressed="true">▦ Grille</button>
+          <button id="vue-liste" aria-pressed="false">☰ Liste</button>
+        </div>
+      </div>
+      <div id="resultat"></div>
+    </section>
+  </main>
+
+  <!-- ============ ONGLET MÉMO ============ -->
+  <main id="onglet-memo" class="onglet memo" hidden></main>
+
+  <!-- ============ ONGLET PROF ============ -->
+  <main id="onglet-prof" class="onglet prof" hidden></main>
+
+  <!-- Popin personne -->
+  <dialog id="popin" class="popin">
+    <button class="fermer" aria-label="Fermer" data-fermer>×</button>
+    <div id="popin-contenu"></div>
+  </dialog>
+
+  <!-- Saisie du prénom de l'élève -->
+  <dialog id="popin-nom" class="popin petite">
+    <form id="form-nom" method="dialog">
+      <h3>Qui es-tu&nbsp;?</h3>
+      <p>Ton prénom (et l'initiale de ton nom) sera visible par ton professeur.</p>
+      <input id="champ-nom" maxlength="40" required placeholder="ex. Léa D." autocomplete="off">
+      <button class="btn btn-principal" type="submit">C'est parti</button>
+    </form>
+  </dialog>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
