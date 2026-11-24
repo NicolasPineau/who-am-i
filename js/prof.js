@@ -116,14 +116,18 @@ function rendre() {
 // Séance : préparation / pilotage / correction
 // ---------------------------------------------------------------------------
 
+let numeroRendu = 0;
 async function rendreSeance() {
   const zone = $("#p-seance");
   if (!zone) return;
+  const numero = ++numeroRendu;
   const e = ctx.etat;
   modeAffiche = e.mode;
   if (e.mode === "libre") banque = await chargerBanque();
   else await questionsDe(e.run_id);
-  if (ctx.etat !== e) return;
+  if (numero !== numeroRendu) return; // un affichage plus récent a été demandé
+  // L'état a pu changer pendant le chargement : on recommence avec le nouvel état.
+  if (ctx.etat.mode !== e.mode || ctx.etat.run_id !== e.run_id) return rendreSeance();
   if (e.mode === "libre") zone.innerHTML = htmlPreparation();
   else if (e.mode === "evaluation") zone.innerHTML = htmlEvaluation();
   else if (e.mode === "fin") zone.innerHTML = htmlFin();
