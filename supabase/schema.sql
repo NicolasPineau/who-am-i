@@ -241,6 +241,168 @@ grant execute on function public.avancer_question(uuid, int) to anon, authentica
 grant execute on function public.soumettre(uuid, int, uuid, text, text, text, text, int, int, text, timestamptz, timestamptz) to anon, authenticated;
 grant execute on function public.question_corrigee(uuid, int) to anon, authenticated;
 
+-- 8. Rattrapage : un lien personnel par élève absent ----------------------------
+-- L'élève avance seul, question par question, avec un chrono par question.
+-- Il peut faire une pause entre deux questions. Sa progression est gardée ici,
+-- donc il reprend au bon endroit, même sur un autre appareil.
+alter table public.etat add column if not exists site_bloque boolean not null default false;
+
+create table if not exists public.rattrapages (
+  id             uuid primary key default gen_random_uuid(),
+  code           text not null unique,            -- la fin du lien, ex. Eva-ESTRELA-7Kq9x2
+  run_id         uuid not null references public.evaluations (id) on delete cascade,
+  eleve_nom      text not null,                   -- « Prénom NOM », comme dans la liste de la classe
+  eleve_id       uuid not null default gen_random_uuid(),
+  cree_le        timestamptz not null default now(),
+  remplace       boolean not null default false,  -- true quand un lien plus récent a été créé
+  statut         text not null default 'a_faire' check (statut in ('a_faire', 'en_cours', 'pause', 'termine')),
+  question_index int  not null default 0,
+  question_debut timestamptz
+);
+alter table public.reponses add column if not exists rattrapage_id uuid references public.rattrapages (id) on delete cascade;
+
+alter table public.rattrapages enable row level security;
+revoke all on public.rattrapages from anon;
+grant select, insert, update, delete on public.rattrapages to authenticated;
+drop policy if exists "rattrapages prof" on public.rattrapages;
+create policy "rattrapages prof" on public.rattrapages for all to authenticated using (true) with check (true);
+
+-- Juge une réponse en comparant les empreintes. Renvoie {"correct", "indice"}.
+create or replace function public.juger_reponse(
+  q public.evaluation_questions, p_empreinte text, p_empreinte_ens text, p_nb_lignes int, p_nb_colonnes int, p_erreur text
+) returns jsonb language plpgsql immutable as $$
+declare
+  v_correct boolean := p_erreur is null and p_empreinte is not null and p_empreinte = q.empreinte;
+  v_indice text := '';
+begin
+  if not v_correct and p_erreur is null then
+    if q.verif = 'valeurs' and p_nb_colonnes is distinct from q.nb_colonnes then
+      v_indice := format('Il faut %s colonne(s), ta requête en renvoie %s.', q.nb_colonnes, p_nb_colonnes);
+    elsif p_nb_lignes > q.nb_lignes then
+      v_indice := format('Pas tout à fait : ta requête renvoie %s ligne(s), c''est trop.', p_nb_lignes);
+    elsif p_nb_lignes < q.nb_lignes then
+      v_indice := format('Pas tout à fait : ta requête renvoie %s ligne(s), il en manque.', p_nb_lignes);
+    elsif q.tri <> 'non' and p_empreinte_ens = q.empreinte_ens then
+      v_indice := 'Les bonnes lignes, mais pas dans le bon ordre.';
+    else
+      v_indice := 'Le bon nombre de lignes, mais pas les bonnes.';
+    end if;
+  end if;
+  return jsonb_build_object('correct', v_correct, 'indice', v_indice);
+end $$;
+revoke all on function public.juger_reponse(public.evaluation_questions, text, text, int, int, text) from public;
+
+-- Ce que voit l'élève : son nom, où il en est, et la consigne de la question en cours
+-- (jamais les questions suivantes, jamais les solutions).
+create or replace function public.rattrapage_lire(p_code text)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare
+  r rattrapages%rowtype;
+  q evaluation_questions%rowtype;
+  v_nb int;
+  v_trouvees int;
+begin
+  select * into r from rattrapages where code = p_code;
+  if not found then return jsonb_build_object('erreur', 'inconnu'); end if;
+  if r.remplace then return jsonb_build_object('erreur', 'remplace'); end if;
+  select nb_questions into v_nb from evaluations where id = r.run_id;
+  select count(distinct question_index) into v_trouvees from reponses where rattrapage_id = r.id and correct;
+  if r.statut = 'en_cours' then
+    select * into q from evaluation_questions where run_id = r.run_id and idx = r.question_index;
+  end if;
+  return jsonb_build_object(
+    'eleve_nom', r.eleve_nom, 'run_id', r.run_id, 'nb_questions', v_nb, 'statut', r.statut,
+    'question_index', r.question_index, 'question_debut', r.question_debut, 'maintenant', now(),
+    'trouvees', v_trouvees,
+    'trouve', exists (select 1 from reponses where rattrapage_id = r.id and question_index = r.question_index and correct),
+    'question', case when r.statut = 'en_cours' then jsonb_build_object(
+      'idx', q.idx, 'notion', q.notion, 'consigne', q.consigne, 'verif', q.verif, 'tri', q.tri, 'duree', q.duree) end);
+end $$;
+
+-- Lance la question en cours (au début, ou après une pause).
+create or replace function public.rattrapage_commencer(p_code text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+begin
+  update rattrapages set statut = 'en_cours', question_debut = now()
+   where code = p_code and not remplace and statut in ('a_faire', 'pause');
+  return rattrapage_lire(p_code);
+end $$;
+
+-- Termine la question en cours : seulement si elle est trouvée ou si son chrono est fini.
+-- Puis passe à la suivante, ou met en pause (p_pause), ou termine l'évaluation.
+create or replace function public.rattrapage_finir_question(p_code text, p_idx int, p_pause boolean)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  r rattrapages%rowtype;
+  v_duree int;
+  v_nb int;
+begin
+  select * into r from rattrapages where code = p_code and not remplace for update;
+  if not found or r.statut <> 'en_cours' or r.question_index <> p_idx then
+    return rattrapage_lire(p_code);
+  end if;
+  select duree into v_duree from evaluation_questions where run_id = r.run_id and idx = r.question_index;
+  if now() < r.question_debut + make_interval(secs => v_duree) - interval '2 seconds'
+     and not exists (select 1 from reponses where rattrapage_id = r.id and question_index = r.question_index and correct) then
+    return rattrapage_lire(p_code);
+  end if;
+  select nb_questions into v_nb from evaluations where id = r.run_id;
+  if r.question_index + 1 >= v_nb then
+    update rattrapages set statut = 'termine', question_index = r.question_index + 1, question_debut = null where id = r.id;
+  elsif p_pause then
+    update rattrapages set statut = 'pause', question_index = r.question_index + 1, question_debut = null where id = r.id;
+  else
+    update rattrapages set statut = 'en_cours', question_index = r.question_index + 1, question_debut = now() where id = r.id;
+  end if;
+  return rattrapage_lire(p_code);
+end $$;
+
+-- Une tentative de l'élève pendant son rattrapage. Le serveur décide si elle est juste.
+create or replace function public.rattrapage_soumettre(
+  p_code text, p_idx int, p_requete text,
+  p_empreinte text, p_empreinte_ens text, p_nb_lignes int, p_nb_colonnes int, p_erreur text,
+  p_affichee_le timestamptz, p_repondu_le timestamptz
+) returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  r rattrapages%rowtype;
+  q evaluation_questions%rowtype;
+  v_tentative int;
+  v_juge jsonb;
+begin
+  select * into r from rattrapages where code = p_code and not remplace;
+  if not found or r.statut <> 'en_cours' or r.question_index <> p_idx then
+    return jsonb_build_object('erreur', 'fermee');
+  end if;
+  select * into q from evaluation_questions where run_id = r.run_id and idx = p_idx;
+  if now() > r.question_debut + make_interval(secs => q.duree) + interval '3 seconds' then
+    return jsonb_build_object('erreur', 'fermee');
+  end if;
+  if exists (select 1 from reponses where rattrapage_id = r.id and question_index = p_idx and correct) then
+    return jsonb_build_object('erreur', 'deja');
+  end if;
+  select count(*) + 1 into v_tentative from reponses where rattrapage_id = r.id and question_index = p_idx;
+  if v_tentative > 200 then return jsonb_build_object('erreur', 'trop'); end if;
+
+  v_juge := juger_reponse(q, p_empreinte, p_empreinte_ens, p_nb_lignes, p_nb_colonnes, p_erreur);
+  insert into reponses (run_id, eleve_id, eleve_nom, question_index, requete, correct, erreur, tentative,
+                        affichee_le, repondu_le, duree_ms, rattrapage_id)
+  values (r.run_id, r.eleve_id, left(r.eleve_nom, 40), p_idx, left(p_requete, 4000),
+          (v_juge ->> 'correct')::boolean, left(coalesce(p_erreur, nullif(v_juge ->> 'indice', '')), 500), v_tentative,
+          p_affichee_le, p_repondu_le,
+          greatest(0, least(86400000, (extract(epoch from (p_repondu_le - p_affichee_le)) * 1000)::bigint))::int,
+          r.id);
+  return jsonb_build_object('correct', (v_juge ->> 'correct')::boolean, 'tentative', v_tentative, 'indice', v_juge ->> 'indice');
+end $$;
+
+revoke all on function public.rattrapage_lire(text) from public;
+revoke all on function public.rattrapage_commencer(text) from public;
+revoke all on function public.rattrapage_finir_question(text, int, boolean) from public;
+revoke all on function public.rattrapage_soumettre(text, int, text, text, text, int, int, text, timestamptz, timestamptz) from public;
+grant execute on function public.rattrapage_lire(text) to anon, authenticated;
+grant execute on function public.rattrapage_commencer(text) to anon, authenticated;
+grant execute on function public.rattrapage_finir_question(text, int, boolean) to anon, authenticated;
+grant execute on function public.rattrapage_soumettre(text, int, text, text, text, int, int, text, timestamptz, timestamptz) to anon, authenticated;
+
 -- 7. Temps réel : les postes sont prévenus dès que l'état change ----------------
 do $$
 begin

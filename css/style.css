@@ -250,3 +250,22 @@ table.tableau { border-collapse: collapse; width: 100%; font-size: .92rem; }
 .prof details { margin-top: 12px; border-top: 1px dashed var(--bord); padding-top: 10px; }
 .prof summary { cursor: pointer; font-weight: 600; }
 .prof details textarea { width: 100%; font: .9rem var(--mono); padding: 8px 10px; border: 1px solid var(--bord); border-radius: 8px; margin: 6px 0; }
+
+/* Écran qui masque tout (rattrapage, site bloqué) */
+.ecran-plein { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; padding: 16px; background: var(--fond); }
+.ecran-carte { max-width: 560px; width: 100%; background: var(--carte); border-radius: 16px; box-shadow: var(--ombre); padding: 28px 24px; text-align: center; }
+.ecran-carte h2 { margin: 6px 0 12px; }
+.ecran-carte p { margin: 8px 0; }
+.ecran-emoji { font-size: 3rem; margin: 0 !important; }
+.ecran-regles { text-align: left; margin: 14px 0 20px; padding-left: 1.2em; color: var(--doux); }
+.ecran-regles li { margin-bottom: 6px; }
+.ecran-boutons { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 16px; }
+.ecran-carte .btn-principal { margin-top: 10px; }
+#q-suivante { margin-top: 8px; }
+
+/* Rattrapage (onglet Prof) */
+.interrupteur { display: flex; gap: 8px; align-items: center; font-weight: 600; }
+.eleves-choix { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 4px 12px; margin: 8px 0; }
+.eleves-choix label { display: flex; gap: 6px; align-items: center; }
+.lien-ratt { width: 22em; max-width: 50vw; font: .8rem var(--mono); padding: 4px 6px; border: 1px solid var(--bord); border-radius: 6px; }
+.tag-ratt { font-size: .7rem; font-weight: 600; color: var(--bleu); background: #e8f0fd; padding: 1px 6px; border-radius: 999px; }

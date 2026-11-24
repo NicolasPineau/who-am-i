@@ -16,7 +16,14 @@ const ctx = {
   evaluation: null,
   presents: [],
   ecouteurs: [], // fonctions appelées à chaque changement d'état
+  // Rattrapage : { code, etat } quand la page est ouverte avec un lien personnel (?rattrapage=…)
+  ratt: null,
 };
+
+// Clé des suivis locaux : par évaluation en classe, ou par lien de rattrapage.
+function cleRun() {
+  return ctx.ratt ? "ratt:" + ctx.ratt.code : ctx.etat.run_id;
+}
 
 // ---------- Petits utilitaires de stockage (protégés contre les navigateurs restrictifs) ----------
 function lire(cle, defaut = null) {
@@ -54,15 +61,16 @@ function oublierEleve() {
 
 // Un poste connecté en prof n'apparaît jamais comme élève dans la classe.
 function majIdentite() {
-  if (ctx.backend.estProf()) ctx.backend.quitter();
+  if (ctx.backend.estProf() || ctx.ratt) ctx.backend.quitter();
   else if (eleve()) ctx.backend.rejoindre(eleve());
   afficherEleve();
+  majBlocage();
 }
 
 function afficherEleve() {
   const e = eleve();
   const b = $("#btn-eleve");
-  const visible = e && ctx.backend.type !== "aucun" && !ctx.backend.estProf();
+  const visible = e && ctx.backend.type !== "aucun" && !ctx.backend.estProf() && !ctx.ratt;
   b.hidden = !visible;
   if (visible) b.textContent = "👤 " + e.nom;
 }
@@ -72,6 +80,7 @@ function ouvrirOnglet(nom) {
   document.querySelectorAll(".onglets button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.onglet === nom)));
   document.querySelectorAll(".onglet").forEach((m) => { m.hidden = m.id !== "onglet-" + nom; });
   ctx.ongletActif = nom;
+  majBlocage();
   ctx.ecouteurs.forEach((f) => f(ctx.etat, "onglet"));
   try { sessionStorage.setItem("onglet", nom); } catch { /* rien */ }
 }
@@ -244,27 +253,39 @@ function majSuivi(run, idx, patch) {
 
 // Question en cours (seulement les colonnes publiques : pas de solution côté élève)
 function questionCourante() {
+  if (ctx.ratt) {
+    const r = ctx.ratt.etat;
+    if (!r || r.statut !== "en_cours" || !r.question) return null;
+    return { ...r.question, run_id: r.run_id, index: r.question.idx, total: r.nb_questions };
+  }
   const e = ctx.etat, q = ctx.question;
   if (e.mode !== "evaluation" || !q || q.run_id !== e.run_id || q.idx !== e.question_index) return null;
   return { ...q, index: q.idx, total: ctx.evaluation?.nb_questions ?? "?" };
 }
 
+function debutQuestion() {
+  if (ctx.ratt) return ctx.ratt.etat?.question_debut ? new Date(ctx.ratt.etat.question_debut).getTime() : null;
+  return ctx.etat.question_debut;
+}
+
 function tempsRestant() {
   const q = questionCourante();
-  if (!q || !ctx.etat.question_debut) return null;
-  return q.duree * 1000 - (ctx.backend.maintenant() - ctx.etat.question_debut);
+  const debut = debutQuestion();
+  if (!q || !debut) return null;
+  return q.duree * 1000 - (ctx.backend.maintenant() - debut);
 }
 
 let envoiEnCours = false;
 async function verifierReponse(sql, res, erreur) {
   const q = questionCourante();
   if (!q) return;
-  const run = ctx.etat.run_id;
-  const s = suivi(run, q.index) || {};
+  const run = q.run_id;
+  const cle = cleRun();
+  const s = suivi(cle, q.index) || {};
   const retour = $("#q-retour");
   if (s.trouve) return;
   if (tempsRestant() <= 0) { retour.className = "retour ko"; retour.textContent = "⏱ Temps écoulé pour cette question."; return; }
-  const moi = ctx.backend.estProf() ? null : eleve();
+  const moi = ctx.ratt ? { id: "lien", nom: ctx.ratt.etat.eleve_nom } : ctx.backend.estProf() ? null : eleve();
   if (!moi) {
     retour.className = "retour";
     retour.textContent = ctx.backend.estProf() ? "(Vue prof : tes requêtes ne sont pas enregistrées.)" : "Donne ton prénom pour participer.";
@@ -280,20 +301,22 @@ async function verifierReponse(sql, res, erreur) {
     if (!emp) message = "Ta requête doit renvoyer la colonne id pour qu'on voie les personnes.";
   }
   const maintenant = Date.now();
-  const affichee = s.affichee || maintenant;
+  // En rattrapage, le temps part du début de la question sur le serveur (même après un changement d'appareil).
+  const affichee = ctx.ratt ? debutQuestion() - (ctx.backend.maintenant() - Date.now()) : s.affichee || maintenant;
   envoiEnCours = true;
   $("#btn-ok").disabled = true;
   retour.className = "retour";
   retour.textContent = "Vérification…";
   let r;
   try {
-    r = await ctx.backend.soumettre({
+    const envoi = {
       run_id: run, question_index: q.index, eleve_id: moi.id, eleve_nom: moi.nom,
       requete: sql.slice(0, 4000), erreur: message ? message.slice(0, 500) : null,
       empreinte: emp?.empreinte ?? null, empreinte_ens: emp?.empreinte_ens ?? null,
       nb_lignes: res ? res.lignes.length : null, nb_colonnes: res ? res.colonnes.length : null,
       affichee_le: new Date(affichee).toISOString(), repondu_le: new Date(maintenant).toISOString(),
-    });
+    };
+    r = ctx.ratt ? await ctx.backend.rattrapageSoumettre(ctx.ratt.code, envoi) : await ctx.backend.soumettre(envoi);
   } catch (e) {
     console.warn(e);
     retour.className = "retour ko";
@@ -304,14 +327,16 @@ async function verifierReponse(sql, res, erreur) {
     $("#btn-ok").disabled = false;
   }
   if (r?.erreur === "fermee") { retour.className = "retour ko"; retour.textContent = "⏱ Cette question est terminée."; return; }
-  if (r?.erreur === "deja") { majSuivi(run, q.index, { trouve: true }); afficherQuestion(); return; }
+  if (r?.erreur === "deja") { majSuivi(cle, q.index, { trouve: true }); if (ctx.ratt) ctx.ratt.etat.trouve = true; afficherQuestion(); return; }
   if (r?.erreur) { retour.className = "retour ko"; retour.textContent = "Trop d'essais pour cette question."; return; }
 
   const duree = maintenant - affichee;
-  majSuivi(run, q.index, { tentatives: r.tentative, derniere: sql, trouve: r.correct, duree_ms: r.correct ? duree : null });
+  majSuivi(cle, q.index, { tentatives: r.tentative, derniere: sql, trouve: r.correct, duree_ms: r.correct ? duree : null });
   if (r.correct) {
     retour.className = "retour ok";
-    retour.textContent = `✔ Bravo ! Trouvé en ${formatDuree(duree)} (${r.tentative} essai${r.tentative > 1 ? "s" : ""}). Attends la question suivante…`;
+    retour.textContent = `✔ Bravo ! Trouvé en ${formatDuree(duree)} (${r.tentative} essai${r.tentative > 1 ? "s" : ""}). ` +
+      (ctx.ratt ? "Clique sur « Question suivante » quand tu es prêt." : "Attends la question suivante…");
+    if (ctx.ratt) { ctx.ratt.etat.trouve = true; ctx.ratt.etat.trouvees = (ctx.ratt.etat.trouvees || 0) + 1; $("#q-suivante").hidden = false; }
   } else {
     retour.className = "retour ko";
     const pourquoi = erreur ? "Ta requête contient une erreur (voir le message sous la requête)." : message || r.indice;
@@ -331,6 +356,11 @@ function rafraichirChrono() {
   const sec = Math.max(0, Math.ceil(reste / 1000));
   c.textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
   c.classList.toggle("urgent", sec <= 10 && sec > 0);
+  if (reste <= 0 && ctx.ratt) {
+    // Rattrapage : fin du chrono → écran de fin de question (question suivante ou pause)
+    afficherEcranRattrapage("fin");
+    return;
+  }
   if (reste <= 0) {
     const s = suivi(ctx.etat.run_id, q.index);
     if (!s?.trouve) {
@@ -350,19 +380,22 @@ function rafraichirChrono() {
 
 function afficherQuestion() {
   const q = questionCourante();
-  const run = ctx.etat.run_id;
+  const run = cleRun();
   const cle = q ? `${run}:${q.index}` : null;
   $("#bandeau-question").hidden = !q;
   if (!q) { questionAffichee = null; return; }
   // Heure d'affichage de la question sur ce poste (gardée même si on recharge la page)
   const s = suivi(run, q.index) || majSuivi(run, q.index, { affichee: Date.now(), tentatives: 0 });
+  const trouve = s.trouve || (ctx.ratt && ctx.ratt.etat.trouve);
+  $("#q-suivante").hidden = !(ctx.ratt && trouve);
   $("#q-numero").textContent = `Question ${q.index + 1} / ${q.total}`;
   $("#q-notion").textContent = q.notion;
   $("#q-consigne").textContent = q.consigne;
   const r = $("#q-retour");
-  if (s.trouve) {
+  if (trouve) {
     r.className = "retour ok";
-    r.textContent = `✔ Bravo ! Trouvé${s.duree_ms != null ? " en " + formatDuree(s.duree_ms) : ""}. Attends la question suivante…`;
+    r.textContent = `✔ Bravo ! Trouvé${s.duree_ms != null ? " en " + formatDuree(s.duree_ms) : ""}. ` +
+      (ctx.ratt ? "Clique sur « Question suivante » quand tu es prêt." : "Attends la question suivante…");
   } else if (cle !== questionAffichee) {
     r.className = "retour";
     r.textContent = ctx.backend.estProf() && !eleve() ? "(Vue prof : tes requêtes ne sont pas enregistrées.)" : "";
@@ -429,6 +462,8 @@ function afficherBadge() {
 async function appliquerEtat(e) {
   const ancien = ctx.etat;
   ctx.etat = e;
+  majBlocage();
+  if (ctx.ratt) return; // en rattrapage, l'élève avance seul : l'état de la classe ne le concerne pas
   if (e.run_id && (!ctx.evaluation || ctx.evaluation.id !== e.run_id)) {
     try { ctx.evaluation = await ctx.backend.getEvaluation(e.run_id); } catch { ctx.evaluation = null; }
   }
@@ -457,6 +492,125 @@ async function appliquerEtat(e) {
   ctx.ecouteurs.forEach((f) => f(e, "etat"));
 }
 
+// ---------- Rattrapage : l'élève avance seul avec son lien personnel ----------
+
+// Un écran qui masque tout le site (accueil, fin de question, pause, fin, site bloqué).
+// `cle` identifie l'écran : s'il est déjà affiché, on ne le redessine pas (sinon ses boutons
+// seraient recréés 4 fois par seconde par le chrono, et les clics se perdraient).
+function ecranPlein(html, cle = "") {
+  const ecran = $("#ecran-plein");
+  if (html === null) { ecran.hidden = true; ecran.dataset.ecran = ""; return; }
+  if (cle && !ecran.hidden && ecran.dataset.ecran === cle) return;
+  $("#ecran-contenu").innerHTML = html;
+  ecran.dataset.ecran = cle;
+  ecran.hidden = false;
+}
+
+function afficherEcranRattrapage(force) {
+  const r = ctx.ratt.etat;
+  const nom = esc(r?.eleve_nom || "");
+  if (!r || r.erreur) {
+    ecranPlein(`<p class="ecran-emoji">🔒</p><h2>Lien non valable</h2>
+      <p>Ce lien de rattrapage n'existe pas ou n'est plus valable (un nouveau lien a peut-être été créé pour toi).</p>
+      <p>Demande ton lien personnel à ton professeur.</p>`, "invalide");
+    return;
+  }
+  const n = r.nb_questions;
+  if (r.statut === "a_faire") {
+    ecranPlein(`<p class="ecran-emoji">🕵️</p><h2>Bonjour ${nom} !</h2>
+      <p>Voici l'évaluation <b>« Qui est-ce ? SQL »</b> de rattrapage : <b>${n} questions</b>, chacune avec son chrono.</p>
+      <ul class="ecran-regles">
+        <li>Écris ta requête et clique sur OK : tu sais tout de suite si elle est juste.</li>
+        <li>Quand tu as trouvé, tu peux passer à la question suivante sans attendre la fin du chrono.</li>
+        <li>Tu peux faire une <b>pause entre deux questions</b>, jamais pendant une question.</li>
+        <li>Si tu fermes la page pendant une question, son chrono continue : tu risques de la rater.</li>
+      </ul>
+      <button class="btn btn-principal" data-action="commencer">Commencer la question 1</button>`, "accueil");
+    return;
+  }
+  if (r.statut === "pause") {
+    ecranPlein(`<p class="ecran-emoji">⏸️</p><h2>En pause</h2>
+      <p>${nom}, tu as terminé ${r.question_index} question${r.question_index > 1 ? "s" : ""} sur ${n}.</p>
+      <p>Reprends quand tu veux, même plus tard : ta progression est enregistrée.</p>
+      <button class="btn btn-principal" data-action="commencer">Reprendre à la question ${r.question_index + 1}</button>`, "pause:" + r.question_index);
+    return;
+  }
+  if (r.statut === "termine") {
+    ecranPlein(`<p class="ecran-emoji">🎉</p><h2>Terminé !</h2>
+      <p>Bravo ${nom}, tu as trouvé <b>${r.trouvees} question${r.trouvees > 1 ? "s" : ""} sur ${n}</b>.</p>
+      <p>Tes réponses ont été envoyées à ton professeur. La correction se fera en classe, avec tout le monde.</p>`, "termine");
+    return;
+  }
+  // En cours : écran de fin de question si le chrono est fini, ou si l'élève a demandé la suite.
+  const fini = force === "fin" || force === "suivante" || tempsRestant() <= 0;
+  if (!fini) { if ($("#ecran-plein").dataset.ecran !== "") ecranPlein(null); return; }
+  const derniere = r.question_index + 1 >= n;
+  ecranPlein(`<p class="ecran-emoji">${r.trouve ? "✅" : "⏱️"}</p>
+    <h2>Fin de la question ${r.question_index + 1} / ${n}</h2>
+    <p>${r.trouve ? "Bien joué, tu l'as trouvée !" : "Le temps est écoulé pour cette question."}</p>
+    ${derniere
+      ? `<button class="btn btn-principal" data-action="suivante">Terminer l'évaluation</button>`
+      : `<div class="ecran-boutons">
+          <button class="btn btn-principal" data-action="suivante">Question suivante ⏭</button>
+          <button class="btn" data-action="pause">Faire une pause ⏸</button>
+        </div>`}`, "fin:" + r.question_index);
+}
+
+async function actionRattrapage(action) {
+  const r = ctx.ratt.etat;
+  document.querySelectorAll("#ecran-contenu button").forEach((b) => { b.disabled = true; });
+  try {
+    if (action === "commencer") ctx.ratt.etat = await ctx.backend.rattrapageCommencer(ctx.ratt.code);
+    if (action === "suivante" || action === "pause") {
+      ctx.ratt.etat = await ctx.backend.rattrapageFinirQuestion(ctx.ratt.code, r.question_index, action === "pause");
+    }
+  } catch (e) {
+    console.warn(e);
+    alert("Problème de connexion : réessaie dans un instant.");
+  }
+  $("#ecran-plein").dataset.ecran = "?"; // force le nouvel affichage
+  rafraichirRattrapage();
+}
+
+function rafraichirRattrapage() {
+  afficherQuestion();
+  afficherEcranRattrapage();
+  const r = ctx.ratt.etat;
+  $("#badge-mode").className = "badge evaluation";
+  $("#badge-mode").textContent = r && !r.erreur ? `Rattrapage · ${r.eleve_nom}` : "Rattrapage";
+}
+
+async function demarrerRattrapage(code) {
+  ctx.ratt = { code, etat: null };
+  document.querySelector('[data-onglet="prof"]').hidden = true;
+  $("#ecran-contenu").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-action]");
+    if (b) actionRattrapage(b.dataset.action);
+  });
+  $("#q-suivante").addEventListener("click", () => afficherEcranRattrapage("suivante"));
+  if (!ctx.backend.rattrapageLire) {
+    ctx.ratt.etat = { erreur: "indisponible" };
+  } else {
+    try { ctx.ratt.etat = await ctx.backend.rattrapageLire(code); } catch (e) { console.warn(e); ctx.ratt.etat = { erreur: "reseau" }; }
+  }
+  rafraichirRattrapage();
+}
+
+// ---------- Site bloqué : seuls les liens personnels (et le prof) y ont accès ----------
+function majBlocage() {
+  if (!ctx.backend || ctx.ratt) return;
+  const bloque = ctx.etat.site_bloque && !ctx.backend.estProf();
+  const ecran = $("#ecran-plein");
+  if (bloque && ctx.ongletActif !== "prof") {
+    ecranPlein(`<p class="ecran-emoji">🔒</p><h2>Accès fermé</h2>
+      <p>Le site est réservé pour le moment aux élèves qui ont un lien personnel.</p>
+      <p>Demande ton lien à ton professeur.</p>
+      <button class="btn-lien" data-prof>Je suis le professeur</button>`, "bloque");
+  } else if (ecran.dataset.ecran === "bloque") {
+    ecranPlein(null);
+  }
+}
+
 // ---------- Démarrage ----------
 async function demarrer() {
   afficherMessage("info", "Chargement de la base de données…");
@@ -478,7 +632,7 @@ async function demarrer() {
   $("#btn-reinit").addEventListener("click", () => {
     curseur = null;
     // Pendant une évaluation, on vide simplement le prompt (pas de requête toute faite)
-    if (ctx.etat.mode === "evaluation") { t.value = ""; t.focus(); return; }
+    if (ctx.etat.mode === "evaluation" || ctx.ratt) { t.value = ""; t.focus(); return; }
     t.value = REQUETE_DEFAUT;
     executerRequete({ evaluer: false });
   });
@@ -513,6 +667,9 @@ async function demarrer() {
   afficherEleve();
   ctx.majIdentite = majIdentite;
   majIdentite();
+  $("#ecran-plein").addEventListener("click", (e) => { if (e.target.closest("[data-prof]")) ouvrirOnglet("prof"); });
+  const code = new URLSearchParams(location.search).get("rattrapage");
+  if (code) await demarrerRattrapage(code);
   ctx.backend.onPresence((l) => { ctx.presents = l; ctx.ecouteurs.forEach((f) => f(ctx.etat, "presence")); });
   ctx.backend.onEtat((e) => appliquerEtat(e));
   try { await appliquerEtat(await ctx.backend.getEtat()); } catch (e) { console.error(e); }
@@ -520,6 +677,7 @@ async function demarrer() {
 
   let onglet = "jeu";
   try { onglet = sessionStorage.getItem("onglet") || "jeu"; } catch { /* rien */ }
+  if (ctx.ratt && onglet === "prof") onglet = "jeu";
   ouvrirOnglet(onglet);
   setInterval(() => { rafraichirChrono(); ctx.ecouteurs.forEach((f) => f(ctx.etat, "tic")); }, 250);
 }

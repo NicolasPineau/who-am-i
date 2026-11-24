@@ -41,7 +41,9 @@ export function initProf(conteneur, contexte) {
   ctx.ecouteurs.push((etat, raison) => {
     if (!ctx.backend.estProf()) return;
     if (raison === "etat") {
-      if (etat.mode !== modeAffiche) { rendreSeance(); rendreResultats(); }
+      const bloque = $("#p-bloque");
+      if (bloque) bloque.checked = !!etat.site_bloque;
+      if (etat.mode !== modeAffiche) { rendreSeance(); rendreResultats(); rendreRattrapage(); }
       else majSeance();
       rafraichirReponses(true);
     } else if (raison === "presence") {
@@ -103,13 +105,15 @@ function rendre() {
     <div class="carte" id="p-seance"></div>
     <div class="carte" id="p-direct"></div>
     <div class="carte" id="p-resultats"></div>
+    <div class="carte" id="p-rattrapage"></div>
     <div class="carte" id="p-banque"></div>
     <p class="note">Connecté en tant que prof${b.type === "local" ? " (démo)" : ""}. <button class="btn-lien" id="p-deconnexion">Se déconnecter</button></p>`;
   $("#p-deconnexion").addEventListener("click", async () => { await b.deconnexion(); modeAffiche = null; ctx.majIdentite?.(); rendre(); });
   rendreSeance();
-  chargerClasse().then(() => { rendreDirect(); rendreTableau(); });
+  chargerClasse().then(() => { rendreDirect(); rendreTableau(); rendreRattrapage(); });
   rendreResultats();
   rendreBanque();
+  rendreRattrapage();
 }
 
 // ---------------------------------------------------------------------------
@@ -342,9 +346,10 @@ async function rafraichirReponses(force) {
 function synthese(liste) {
   const eleves = new Map();
   for (const r of liste) {
-    if (!eleves.has(r.eleve_id)) eleves.set(r.eleve_id, { id: r.eleve_id, nom: r.eleve_nom, q: new Map() });
+    if (!eleves.has(r.eleve_id)) eleves.set(r.eleve_id, { id: r.eleve_id, nom: r.eleve_nom, q: new Map(), rattrapage_id: r.rattrapage_id || null, premier: r.recu_le || "" });
     const el = eleves.get(r.eleve_id);
     el.nom = r.eleve_nom;
+    if (r.recu_le && r.recu_le < el.premier) el.premier = r.recu_le;
     const c = el.q.get(r.question_index) || { tentatives: 0, trouve: false, duree_ms: null };
     c.tentatives++;
     if (r.correct && (!c.trouve || r.duree_ms < c.duree_ms)) { c.trouve = true; c.duree_ms = r.duree_ms; c.tentative_ok = r.tentative; }
@@ -421,6 +426,7 @@ function rendreDirect() {
       await chargerClasse();
       rendreDirect();
       rendreTableau();
+      rendreRattrapage();
     } catch (err) { alert("Erreur : " + (err.message || err)); }
   });
 }
@@ -536,11 +542,23 @@ function donneesTableau() {
   const questions = questionsParRun.get(runResultats) || [];
   // Regroupe par élève de la liste (un élève peut s'être connecté sur deux postes)
   const parCle = new Map();
-  for (const el of synthese(reponsesCache.liste)) {
+  const entrees = synthese(reponsesCache.liste).map((el) => {
     const m = classe.length ? identifier(el.nom) : null;
-    const cle = m ? "m:" + m.id : "e:" + el.id;
+    return { el, m, cle: m ? "m:" + m.id : "e:" + el.nom };
+  });
+  // Si un élève a fait un rattrapage, seul son rattrapage le plus récent compte
+  // (il remplace ses réponses en classe et ses rattrapages précédents).
+  const dernierRattrapage = new Map();
+  for (const { el, cle } of entrees) {
+    if (!el.rattrapage_id) continue;
+    const d = dernierRattrapage.get(cle);
+    if (!d || el.premier > d.premier) dernierRattrapage.set(cle, el);
+  }
+  for (const { el, m, cle } of entrees) {
+    const ratt = dernierRattrapage.get(cle);
+    if (ratt && el.rattrapage_id !== ratt.rattrapage_id) continue;
     const x = parCle.get(cle);
-    if (!x) { parCle.set(cle, { ...el, nom: m ? nomOfficiel(m) : el.nom + (classe.length ? " ?" : ""), membre: m }); continue; }
+    if (!x) { parCle.set(cle, { ...el, nom: m ? nomOfficiel(m) : el.nom + (classe.length ? " ?" : ""), membre: m, rattrapage: !!ratt }); continue; }
     for (const [i, c] of el.q) {
       const d = x.q.get(i);
       if (!d || (c.trouve && (!d.trouve || c.duree_ms < d.duree_ms))) x.q.set(i, c);
@@ -565,9 +583,9 @@ function rendreTableau() {
   if (!d.lignes.length) { zone.innerHTML = '<p class="note">Aucune réponse enregistrée pour cette évaluation.</p>'; return; }
   const entetes = d.indices.map((i) => `<th title="${esc(d.consigne(i))}">Q${i + 1}</th>`).join("");
   const corps = d.lignes.map((el) => el.absent
-    ? `<tr><td><b>${esc(el.nom)}</b></td><td class="rien" colspan="${d.n + 2}">aucune réponse</td></tr>`
+    ? `<tr><td><b>${esc(el.nom)}</b>${el.rattrapage ? ' <span class="tag-ratt">rattrapage</span>' : ""}</td><td class="rien" colspan="${d.n + 2}">aucune réponse</td></tr>`
     : `
-    <tr><td><b>${esc(el.nom)}</b></td>
+    <tr><td><b>${esc(el.nom)}</b>${el.rattrapage ? ' <span class="tag-ratt">rattrapage</span>' : ""}</td>
       ${d.indices.map((i) => {
         const c = el.q.get(i);
         if (!c) return '<td class="rien">—</td>';
@@ -582,11 +600,11 @@ function exporterCSV() {
   const d = donneesTableau();
   if (!d || !d.lignes.length) return alert("Rien à exporter.");
   const sec = (ms) => (ms === null || ms === undefined ? "" : (ms / 1000).toFixed(1).replace(".", ","));
-  const entete = ["Élève"];
+  const entete = ["Élève", "Mode"];
   d.indices.forEach((i) => entete.push(`Q${i + 1} temps (s)`, `Q${i + 1} essais`, `Q${i + 1} trouvée`));
   entete.push("Trouvées", "Temps total (s)");
   const lignes = d.lignes.map((el) => {
-    const l = [el.nom];
+    const l = [el.nom, el.absent ? "" : el.rattrapage ? "rattrapage" : "classe"];
     d.indices.forEach((i) => {
       const c = el.q.get(i);
       l.push(c?.trouve ? sec(c.duree_ms) : "", c ? (c.trouve ? c.tentative_ok : c.tentatives) : 0, el.absent ? "aucune réponse" : c?.trouve ? "oui" : "non");
@@ -742,4 +760,92 @@ function rendreEditeur() {
     } catch (err) { alert("Erreur : " + (err.message || err)); }
   });
   zone.querySelector("#e-consigne").focus();
+}
+
+// ---------------------------------------------------------------------------
+// Rattrapage : des liens personnels pour les élèves absents (ou à qui on fait refaire)
+// ---------------------------------------------------------------------------
+
+const STATUTS = {
+  a_faire: () => "pas encore commencé",
+  en_cours: (r, n) => `question ${r.question_index + 1} / ${n} en cours`,
+  pause: (r) => `en pause après la question ${r.question_index}`,
+  termine: () => "✔ terminé",
+};
+
+function lienRattrapage(code) {
+  return location.origin + location.pathname + "?rattrapage=" + encodeURIComponent(code);
+}
+
+async function rendreRattrapage() {
+  const zone = $("#p-rattrapage");
+  if (!zone || !ctx.backend.listeRattrapages) return;
+  let liens = [], evals = [];
+  try {
+    [liens, evals] = await Promise.all([ctx.backend.listeRattrapages(), ctx.backend.listeEvaluations()]);
+  } catch (e) {
+    zone.innerHTML = `<h2>Rattrapage</h2><p class="alerte">Impossible de charger les rattrapages : ${esc(e.message || e)}. As-tu relancé le script schema.sql dans Supabase ?</p>`;
+    return;
+  }
+  const parEval = new Map(evals.map((e) => [e.id, e]));
+  const choix = zone.querySelector("#p-ratt-eval")?.value || runResultats || evals[0]?.id || "";
+  const actifs = liens.filter((l) => !l.remplace);
+  const lignes = actifs.map((l) => {
+    const ev = parEval.get(l.run_id);
+    const statut = (STATUTS[l.statut] || (() => l.statut))(l, ev?.nb_questions ?? "?");
+    const url = lienRattrapage(l.code);
+    return `<tr>
+      <td><b>${esc(l.eleve_nom)}</b></td>
+      <td>${esc(ev?.titre || "?")}</td>
+      <td>${esc(statut)}</td>
+      <td><input class="lien-ratt" type="text" readonly value="${esc(url)}"> <button class="btn" data-copier="${esc(url)}">Copier</button></td>
+      <td><button class="btn-lien btn-danger" data-suppr-ratt="${l.id}">Supprimer</button></td>
+    </tr>`;
+  }).join("");
+  zone.innerHTML = `
+    <h2>Rattrapage</h2>
+    <label class="interrupteur"><input type="checkbox" id="p-bloque" ${ctx.etat.site_bloque ? "checked" : ""}>
+      Bloquer le site pour les élèves qui n'ont pas de lien personnel</label>
+    <p class="note">Les élèves avec un lien font l'évaluation seuls, à leur rythme : un chrono par question, une pause possible entre deux questions. Leurs réponses arrivent dans les résultats et le CSV, marquées « rattrapage ». Un nouveau lien pour un élève remplace son ancien lien et ses réponses précédentes.</p>
+    <details ${actifs.length ? "" : "open"}>
+      <summary>Créer des liens</summary>
+      <div class="ligne" style="margin:8px 0">
+        <label>Évaluation <select id="p-ratt-eval">${evals.map((e) => `<option value="${e.id}" ${e.id === choix ? "selected" : ""}>${esc(e.titre)} — ${new Date(e.creee_le).toLocaleDateString("fr-FR")}</option>`).join("")}</select></label>
+      </div>
+      ${classe.length
+        ? `<div class="eleves-choix">${classe.map((m) => `<label><input type="checkbox" value="${esc(nomOfficiel(m))}"> ${esc(nomOfficiel(m))}</label>`).join("")}</div>`
+        : '<p class="note">Enregistre d\'abord la liste de la classe (carte « Classe »).</p>'}
+      <div class="ligne"><button class="btn btn-principal" id="p-ratt-creer">Créer les liens</button><span class="note" id="p-ratt-info"></span></div>
+    </details>
+    ${actifs.length ? `<div class="tableau-conteneur" style="margin-top:10px"><table class="tableau"><thead><tr><th>Élève</th><th>Évaluation</th><th>Avancement</th><th>Lien à envoyer</th><th></th></tr></thead><tbody>${lignes}</tbody></table></div>
+      <div class="ligne" style="margin-top:8px"><button class="btn" id="p-ratt-actualiser">Actualiser</button></div>` : ""}`;
+
+  zone.querySelector("#p-bloque").addEventListener("change", async (e) => {
+    try { await ctx.backend.majEtat({ site_bloque: e.target.checked }); } catch (err) { alert("Erreur : " + (err.message || err)); e.target.checked = !e.target.checked; }
+  });
+  zone.querySelector("#p-ratt-actualiser")?.addEventListener("click", rendreRattrapage);
+  zone.querySelector("#p-ratt-creer")?.addEventListener("click", async () => {
+    const run = zone.querySelector("#p-ratt-eval").value;
+    const noms = [...zone.querySelectorAll(".eleves-choix input:checked")].map((c) => c.value);
+    if (!run) return alert("Aucune évaluation choisie.");
+    if (!noms.length) return alert("Coche au moins un élève.");
+    const deja = actifs.filter((l) => l.run_id === run && noms.includes(l.eleve_nom)).map((l) => l.eleve_nom);
+    if (deja.length && !confirm(`${deja.join(", ")} ${deja.length > 1 ? "ont" : "a"} déjà un lien pour cette évaluation : le nouveau lien remplacera l'ancien. Continuer ?`)) return;
+    try {
+      await ctx.backend.creerRattrapages(run, noms);
+      await rendreRattrapage();
+    } catch (err) { alert("Erreur : " + (err.message || err)); }
+  });
+  zone.querySelector("tbody")?.addEventListener("click", async (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    if (b.dataset.copier) {
+      try { await navigator.clipboard.writeText(b.dataset.copier); b.textContent = "Copié ✔"; } catch { b.previousElementSibling.select(); }
+      setTimeout(() => { b.textContent = "Copier"; }, 1500);
+    }
+    if (b.dataset.supprRatt) {
+      if (!confirm("Supprimer ce lien ? Les réponses déjà envoyées avec ce lien seront aussi supprimées.")) return;
+      try { await ctx.backend.supprimerRattrapage(b.dataset.supprRatt); await rendreRattrapage(); } catch (err) { alert("Erreur : " + (err.message || err)); }
+    }
+  });
 }

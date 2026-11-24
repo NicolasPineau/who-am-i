@@ -33,6 +33,7 @@
       </div>
       <p id="q-consigne" class="consigne"></p>
       <p id="q-retour" class="retour"></p>
+      <button id="q-suivante" class="btn btn-principal" type="button" hidden>Question suivante ⏭</button>
     </section>
 
     <section id="bandeau-correction" class="bandeau correction" hidden>
@@ -98,6 +99,11 @@
 
   <!-- ============ ONGLET PROF ============ -->
   <main id="onglet-prof" class="onglet prof" hidden></main>
+
+  <!-- Écran qui masque tout : rattrapage (accueil, fin de question, pause, fin) et site bloqué -->
+  <div id="ecran-plein" class="ecran-plein" hidden>
+    <div id="ecran-contenu" class="ecran-carte" role="dialog" aria-modal="true"></div>
+  </div>
 
   <!-- Popin personne -->
   <dialog id="popin" class="popin">

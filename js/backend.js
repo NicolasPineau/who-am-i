@@ -8,7 +8,15 @@ import { EXEMPLES } from "./exemples.js";
 const COLONNES_PUBLIQUES = "run_id,idx,notion,consigne,verif,tri,duree";
 
 function etatVide() {
-  return { mode: "libre", run_id: null, question_index: 0, question_debut: null, correction_index: 0 };
+  return { mode: "libre", run_id: null, question_index: 0, question_debut: null, correction_index: 0, site_bloque: false };
+}
+
+// Fin de lien de rattrapage : « Prénom-NOM-xxxxxx » (lettres sans accents + code aléatoire).
+export function codeRattrapage(nom) {
+  const lisible = nom.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+  const hasard = Array.from(crypto.getRandomValues(new Uint8Array(6)), (o) => alphabet[o % alphabet.length]).join("");
+  return `${lisible}-${hasard}`;
 }
 
 function normaliserEtat(e) {
@@ -19,6 +27,7 @@ function normaliserEtat(e) {
     question_index: e.question_index ?? 0,
     question_debut: e.question_debut ? new Date(e.question_debut).getTime() : null,
     correction_index: e.correction_index ?? 0,
+    site_bloque: !!e.site_bloque,
   };
 }
 
@@ -237,6 +246,44 @@ class SupabaseBackend {
     if (error) throw error;
   }
 
+  // --- Rattrapage (élève) : tout passe par des fonctions du serveur, avec le code du lien.
+  async rattrapage(fonction, params) {
+    const t0 = Date.now();
+    const { data, error } = await this.client.rpc(fonction, params);
+    if (error) throw error;
+    if (data && data.maintenant) this.decalage = new Date(data.maintenant).getTime() - (t0 + Date.now()) / 2;
+    return data;
+  }
+  rattrapageLire(code) { return this.rattrapage("rattrapage_lire", { p_code: code }); }
+  rattrapageCommencer(code) { return this.rattrapage("rattrapage_commencer", { p_code: code }); }
+  rattrapageFinirQuestion(code, idx, pause) { return this.rattrapage("rattrapage_finir_question", { p_code: code, p_idx: idx, p_pause: pause }); }
+  rattrapageSoumettre(code, r) {
+    return this.rattrapage("rattrapage_soumettre", {
+      p_code: code, p_idx: r.question_index, p_requete: r.requete, p_empreinte: r.empreinte, p_empreinte_ens: r.empreinte_ens,
+      p_nb_lignes: r.nb_lignes, p_nb_colonnes: r.nb_colonnes, p_erreur: r.erreur,
+      p_affichee_le: r.affichee_le, p_repondu_le: r.repondu_le,
+    });
+  }
+
+  // --- Rattrapage (prof)
+  async listeRattrapages() {
+    const { data, error } = await this.client.from("rattrapages").select("*").order("cree_le", { ascending: false });
+    if (error) throw error;
+    return data;
+  }
+  async creerRattrapages(runId, noms) {
+    // Un nouveau lien remplace l'ancien lien du même élève pour la même évaluation.
+    let r = await this.client.from("rattrapages").update({ remplace: true }).eq("run_id", runId).in("eleve_nom", noms);
+    if (r.error) throw r.error;
+    r = await this.client.from("rattrapages").insert(noms.map((nom) => ({ run_id: runId, eleve_nom: nom, code: codeRattrapage(nom) }))).select();
+    if (r.error) throw r.error;
+    return r.data;
+  }
+  async supprimerRattrapage(id) {
+    const { error } = await this.client.from("rattrapages").delete().eq("id", id);
+    if (error) throw error;
+  }
+
   async classe() {
     const { data, error } = await this.client.from("eleves").select("*").order("nom").order("prenom");
     if (error) throw error;
@@ -401,6 +448,92 @@ class LocalBackend {
   }
   async supprimerQuestion(id) { this.ecrire("demo-banque", this.lire("demo-banque", []).filter((q) => q.id !== id)); }
   async classe() { return this.lire("demo-classe", []); }
+
+  // --- Rattrapage en mode démo : mêmes règles que les fonctions du serveur.
+  rattrapageLireSync(code) {
+    const r = this.lire("demo-rattrapages", []).find((x) => x.code === code);
+    if (!r) return { erreur: "inconnu" };
+    if (r.remplace) return { erreur: "remplace" };
+    const ev = this.lire("demo-evaluations", []).find((e) => e.id === r.run_id);
+    const reps = this.lire("demo-reponses", []).filter((x) => x.rattrapage_id === r.id);
+    const q = r.statut === "en_cours" ? this.questionSync(r.run_id, r.question_index) : null;
+    return {
+      eleve_nom: r.eleve_nom, run_id: r.run_id, nb_questions: ev?.nb_questions ?? 0, statut: r.statut,
+      question_index: r.question_index, question_debut: r.question_debut, maintenant: new Date().toISOString(),
+      trouvees: new Set(reps.filter((x) => x.correct).map((x) => x.question_index)).size,
+      trouve: reps.some((x) => x.correct && x.question_index === r.question_index),
+      question: q ? { idx: q.idx, notion: q.notion, consigne: q.consigne, verif: q.verif, tri: q.tri, duree: q.duree } : null,
+    };
+  }
+  majRattrapage(code, patch) {
+    const l = this.lire("demo-rattrapages", []);
+    const r = l.find((x) => x.code === code && !x.remplace);
+    if (r) Object.assign(r, patch);
+    this.ecrire("demo-rattrapages", l);
+    return r;
+  }
+  async rattrapageLire(code) { return this.rattrapageLireSync(code); }
+  async rattrapageCommencer(code) {
+    const r = this.lire("demo-rattrapages", []).find((x) => x.code === code && !x.remplace);
+    if (r && ["a_faire", "pause"].includes(r.statut)) this.majRattrapage(code, { statut: "en_cours", question_debut: new Date().toISOString() });
+    return this.rattrapageLireSync(code);
+  }
+  async rattrapageFinirQuestion(code, idx, pause) {
+    const e = this.rattrapageLireSync(code);
+    if (e.erreur || e.statut !== "en_cours" || e.question_index !== idx) return e;
+    const fini = Date.now() >= new Date(e.question_debut).getTime() + (e.question.duree - 2) * 1000;
+    if (!fini && !e.trouve) return e;
+    if (idx + 1 >= e.nb_questions) this.majRattrapage(code, { statut: "termine", question_index: idx + 1, question_debut: null });
+    else if (pause) this.majRattrapage(code, { statut: "pause", question_index: idx + 1, question_debut: null });
+    else this.majRattrapage(code, { statut: "en_cours", question_index: idx + 1, question_debut: new Date().toISOString() });
+    return this.rattrapageLireSync(code);
+  }
+  async rattrapageSoumettre(code, r) {
+    const e = this.rattrapageLireSync(code);
+    if (e.erreur || e.statut !== "en_cours" || e.question_index !== r.question_index) return { erreur: "fermee" };
+    if (Date.now() > new Date(e.question_debut).getTime() + (e.question.duree + 3) * 1000) return { erreur: "fermee" };
+    if (e.trouve) return { erreur: "deja" };
+    const ratt = this.lire("demo-rattrapages", []).find((x) => x.code === code && !x.remplace);
+    const q = this.questionSync(ratt.run_id, r.question_index);
+    const toutes = this.lire("demo-reponses", []);
+    const tentative = toutes.filter((x) => x.rattrapage_id === ratt.id && x.question_index === r.question_index).length + 1;
+    const juge = this.juger(q, r);
+    toutes.push({
+      id: toutes.length + 1, run_id: ratt.run_id, eleve_id: ratt.eleve_id, eleve_nom: ratt.eleve_nom, rattrapage_id: ratt.id,
+      question_index: r.question_index, requete: r.requete, correct: juge.correct, erreur: r.erreur || juge.indice || null,
+      tentative, affichee_le: r.affichee_le, repondu_le: r.repondu_le,
+      duree_ms: Math.max(0, new Date(r.repondu_le) - new Date(r.affichee_le)), recu_le: new Date().toISOString(),
+    });
+    this.ecrire("demo-reponses", toutes);
+    return { correct: juge.correct, tentative, indice: juge.indice };
+  }
+  juger(q, r) {
+    const correct = !r.erreur && !!r.empreinte && r.empreinte === q.empreinte;
+    let indice = "";
+    if (!correct && !r.erreur) {
+      if (q.verif === "valeurs" && r.nb_colonnes !== q.nb_colonnes) indice = `Il faut ${q.nb_colonnes} colonne(s), ta requête en renvoie ${r.nb_colonnes}.`;
+      else if (r.nb_lignes > q.nb_lignes) indice = `Pas tout à fait : ta requête renvoie ${r.nb_lignes} ligne(s), c'est trop.`;
+      else if (r.nb_lignes < q.nb_lignes) indice = `Pas tout à fait : ta requête renvoie ${r.nb_lignes} ligne(s), il en manque.`;
+      else if (q.tri !== "non" && r.empreinte_ens === q.empreinte_ens) indice = "Les bonnes lignes, mais pas dans le bon ordre.";
+      else indice = "Le bon nombre de lignes, mais pas les bonnes.";
+    }
+    return { correct, indice };
+  }
+  async listeRattrapages() { return [...this.lire("demo-rattrapages", [])].reverse(); }
+  async creerRattrapages(runId, noms) {
+    const l = this.lire("demo-rattrapages", []);
+    for (const r of l) if (r.run_id === runId && noms.includes(r.eleve_nom)) r.remplace = true;
+    const nouveaux = noms.map((nom) => ({
+      id: crypto.randomUUID(), code: codeRattrapage(nom), run_id: runId, eleve_nom: nom, eleve_id: crypto.randomUUID(),
+      cree_le: new Date().toISOString(), remplace: false, statut: "a_faire", question_index: 0, question_debut: null,
+    }));
+    this.ecrire("demo-rattrapages", [...l, ...nouveaux]);
+    return nouveaux;
+  }
+  async supprimerRattrapage(id) {
+    this.ecrire("demo-rattrapages", this.lire("demo-rattrapages", []).filter((r) => r.id !== id));
+    this.ecrire("demo-reponses", this.lire("demo-reponses", []).filter((r) => r.rattrapage_id !== id));
+  }
   async remplacerClasse(liste) { this.ecrire("demo-classe", liste.map(({ nom, prenom }) => ({ id: crypto.randomUUID(), nom, prenom }))); }
 }
 
