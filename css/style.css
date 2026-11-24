@@ -205,6 +205,8 @@ table.tableau { border-collapse: collapse; width: 100%; font-size: .92rem; }
 .liste-questions .notion { font-size: .75rem; color: var(--doux); background: var(--fond); padding: 1px 7px; border-radius: 999px; white-space: nowrap; }
 .eleves { display: flex; flex-wrap: wrap; gap: 6px; }
 .eleves span { background: var(--fond); padding: 3px 10px; border-radius: 999px; font-size: .88rem; }
+.eleves span.present { background: #fff; border: 1px solid var(--bord); }
+.eleves span.absent { opacity: .45; }
 .eleves span.trouve { background: var(--vert-fond); color: var(--vert); font-weight: 600; }
 .stat { display: inline-flex; flex-direction: column; background: var(--fond); padding: 8px 14px; border-radius: 10px; min-width: 110px; }
 .stat b { font-size: 1.4rem; }
@@ -244,3 +246,7 @@ table.tableau { border-collapse: collapse; width: 100%; font-size: .92rem; }
 .editeur textarea.mono { font-family: var(--mono); }
 .tableau .notion { font-size: .75rem; color: var(--doux); background: var(--fond); padding: 1px 7px; border-radius: 999px; }
 .btn-lien:disabled { opacity: .3; cursor: default; }
+
+.prof details { margin-top: 12px; border-top: 1px dashed var(--bord); padding-top: 10px; }
+.prof summary { cursor: pointer; font-weight: 600; }
+.prof details textarea { width: 100%; font: .9rem var(--mono); padding: 8px 10px; border: 1px solid var(--bord); border-radius: 8px; margin: 6px 0; }

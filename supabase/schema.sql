@@ -37,6 +37,14 @@ create table if not exists public.banque (
   maj         timestamptz not null default now()
 );
 
+-- 1 bis. Liste des élèves de la classe (prof uniquement) ------------------------
+create table if not exists public.eleves (
+  id      uuid primary key default gen_random_uuid(),
+  nom     text not null,
+  prenom  text not null,
+  maj     timestamptz not null default now()
+);
+
 -- 2. État partagé de la classe (une seule ligne, id = 1) ------------------------
 create table if not exists public.etat (
   id               int primary key default 1 check (id = 1),
@@ -97,19 +105,22 @@ create index if not exists reponses_run_idx on public.reponses (run_id, question
 -- 5. Droits ----------------------------------------------------------------------
 -- « anon » = les élèves (sans compte), « authenticated » = le prof connecté.
 alter table public.banque               enable row level security;
+alter table public.eleves               enable row level security;
 alter table public.etat                 enable row level security;
 alter table public.evaluations          enable row level security;
 alter table public.evaluation_questions enable row level security;
 alter table public.reponses             enable row level security;
 
-revoke all on public.banque, public.etat, public.evaluations, public.evaluation_questions, public.reponses from anon;
-revoke all on public.banque, public.etat, public.evaluations, public.evaluation_questions, public.reponses from authenticated;
+revoke all on public.banque, public.eleves, public.etat, public.evaluations, public.evaluation_questions, public.reponses from anon;
+revoke all on public.banque, public.eleves, public.etat, public.evaluations, public.evaluation_questions, public.reponses from authenticated;
 
 -- Prof : tous les droits
-grant select, insert, update, delete on public.banque, public.evaluations, public.evaluation_questions to authenticated;
+grant select, insert, update, delete on public.banque, public.eleves, public.evaluations, public.evaluation_questions to authenticated;
 grant select, update on public.etat to authenticated;
 grant select, delete on public.reponses to authenticated;
 
+drop policy if exists "eleves prof" on public.eleves;
+create policy "eleves prof" on public.eleves for all to authenticated using (true) with check (true);
 drop policy if exists "banque prof" on public.banque;
 create policy "banque prof" on public.banque for all to authenticated using (true) with check (true);
 drop policy if exists "etat lecture" on public.etat;

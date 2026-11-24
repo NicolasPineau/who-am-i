@@ -2,7 +2,7 @@
 // correction et résultats (temps de réponse de chaque élève).
 import * as M from "./moteur.js";
 import { empreintes } from "./empreinte.js";
-import { esc, formatDuree } from "./util.js";
+import { esc, formatDuree, retrouverEleve, analyserListe } from "./util.js";
 
 let C;            // conteneur
 let ctx;          // contexte partagé avec app.js
@@ -11,6 +11,19 @@ let reponsesCache = { run: null, liste: [], t: 0 };
 let chargement = null;
 let runResultats = null; // évaluation affichée dans « Résultats »
 let banque = [];          // banque de questions du prof
+let classe = [];          // liste des élèves (Supabase, prof uniquement)
+const identifies = new Map(); // nom saisi → élève de la liste (ou null)
+
+function identifier(nomSaisi) {
+  if (!identifies.has(nomSaisi)) identifies.set(nomSaisi, retrouverEleve(classe, nomSaisi));
+  return identifies.get(nomSaisi);
+}
+const nomOfficiel = (e) => `${e.prenom} ${e.nom}`;
+
+async function chargerClasse() {
+  try { classe = await ctx.backend.classe(); } catch (e) { console.warn(e); classe = []; }
+  identifies.clear();
+}
 const questionsParRun = new Map(); // run → questions complètes (avec solutions)
 
 async function questionsDe(run) {
@@ -93,7 +106,7 @@ function rendre() {
     <p class="note">Connecté en tant que prof${b.type === "local" ? " (démo)" : ""}. <button class="btn-lien" id="p-deconnexion">Se déconnecter</button></p>`;
   $("#p-deconnexion").addEventListener("click", async () => { await b.deconnexion(); modeAffiche = null; rendre(); });
   rendreSeance();
-  rendreDirect();
+  chargerClasse().then(() => { rendreDirect(); rendreTableau(); });
   rendreResultats();
   rendreBanque();
 }
@@ -349,20 +362,69 @@ function mediane(t) {
 function rendreDirect() {
   const zone = $("#p-direct");
   if (!zone) return;
+  const ouvert = zone.querySelector("details")?.open;
   const e = ctx.etat;
   const presents = ctx.presents || [];
   const liste = reponsesCache.run === e.run_id ? reponsesCache.liste : [];
   const syn = synthese(liste);
-  const trouveCourant = new Set(e.mode === "evaluation"
+  const trouve = new Set(e.mode === "evaluation"
     ? syn.filter((el) => el.q.get(e.question_index)?.trouve).map((el) => el.id) : []);
-  const noms = new Map(presents.map((p) => [p.id, p.nom]));
-  syn.forEach((el) => { if (!noms.has(el.id)) noms.set(el.id, el.nom + " (déconnecté)"); });
-  const chips = [...noms.entries()].sort((a, b) => a[1].localeCompare(b[1], "fr"))
-    .map(([id, nom]) => `<span class="${trouveCourant.has(id) ? "trouve" : ""}">${trouveCourant.has(id) ? "✔ " : ""}${esc(nom)}</span>`).join("");
+
+  // Qui est là ? (élèves connectés reconnus dans la liste de la classe)
+  const presentsParMembre = new Map(); // id dans la liste → [eleve_id connectés]
+  const inconnus = [];
+  for (const p of presents) {
+    const m = classe.length ? identifier(p.nom) : null;
+    if (m) presentsParMembre.set(m.id, [...(presentsParMembre.get(m.id) || []), p.id]);
+    else inconnus.push(p);
+  }
+  const puce = (nom, ids, present) => {
+    const ok = ids.some((id) => trouve.has(id));
+    return `<span class="${ok ? "trouve" : present ? "present" : "absent"}" title="${present ? "connecté" : "pas connecté"}">${ok ? "✔ " : ""}${esc(nom)}</span>`;
+  };
+  let contenu;
+  if (classe.length) {
+    contenu = classe.map((m) => puce(nomOfficiel(m), presentsParMembre.get(m.id) || [], presentsParMembre.has(m.id))).join("")
+      + (inconnus.length ? `</div><p class="note" style="margin:10px 0 4px">Connectés mais pas reconnus dans la liste :</p><div class="eleves">${inconnus.map((p) => puce(p.nom + " ?", [p.id], true)).join("")}` : "");
+  } else {
+    contenu = presents.map((p) => puce(p.nom, [p.id], true)).join("")
+      || '<span class="note">Personne pour l\'instant. Les élèves apparaissent quand ils ouvrent le site et donnent leur prénom.</span>';
+  }
+  const nbPresents = classe.length ? presentsParMembre.size : presents.length;
+  const titre = classe.length ? `Classe — ${nbPresents} présent${nbPresents > 1 ? "s" : ""} sur ${classe.length}` : `Élèves connectés (${presents.length})`;
+  const nbTrouve = new Set([...trouve].filter((id) => presents.some((p) => p.id === id))).size;
   zone.innerHTML = `
-    <h2>Élèves ${e.mode === "evaluation" ? `— ${trouveCourant.size} / ${presents.length} ont trouvé la question en cours` : `connectés (${presents.length})`}</h2>
-    <div class="eleves">${chips || '<span class="note">Personne pour l\'instant. Les élèves apparaissent quand ils ouvrent le site et donnent leur prénom.</span>'}</div>
-    ${ctx.backend.type === "local" ? '<p class="note">Démo : ouvre un autre onglet sur cette adresse pour jouer un élève.</p>' : ""}`;
+    <h2>${titre}${e.mode === "evaluation" ? ` · ${nbTrouve} ont trouvé la question en cours` : ""}</h2>
+    <div class="eleves">${contenu}</div>
+    <p class="note">En gris : pas encore connecté. Le lancement n'attend personne : un élève qui arrive en retard rejoint la question en cours.</p>
+    ${ctx.backend.type === "local" ? '<p class="note">Démo : ouvre un autre onglet sur cette adresse pour jouer un élève.</p>' : ""}
+    <details ${ouvert ? "open" : ""}>
+      <summary>Liste de la classe (${classe.length} élève${classe.length > 1 ? "s" : ""})</summary>
+      <p class="note">Colle la liste : une ligne par élève « NOM Prénom », ou directement le copier-coller de l'ENT. Elle est stockée dans Supabase, visible par toi seul.</p>
+      <textarea id="p-liste" rows="6" placeholder="DUNYACH Maxime&#10;PELLETIER Maxime&#10;…">${esc(classe.map((m) => `${m.nom} ${m.prenom}`).join("\n"))}</textarea>
+      <div class="ligne"><button class="btn" id="p-liste-ok">Enregistrer la liste</button><span id="p-liste-info" class="note"></span></div>
+    </details>`;
+  zone.querySelector("#p-liste").addEventListener("input", (ev) => {
+    const l = analyserListe(ev.target.value);
+    zone.querySelector("#p-liste-info").textContent = `${l.length} élève(s) reconnu(s)` + homonymes(l);
+  });
+  zone.querySelector("#p-liste-ok").addEventListener("click", async () => {
+    const l = analyserListe(zone.querySelector("#p-liste").value);
+    if (!confirm(`Remplacer la liste de la classe par ces ${l.length} élèves ?`)) return;
+    try {
+      await ctx.backend.remplacerClasse(l);
+      await chargerClasse();
+      rendreDirect();
+      rendreTableau();
+    } catch (err) { alert("Erreur : " + (err.message || err)); }
+  });
+}
+
+function homonymes(l) {
+  const vus = new Map();
+  l.forEach((e) => { const k = e.prenom.toLowerCase(); vus.set(k, [...(vus.get(k) || []), e]); });
+  const doubles = [...vus.values()].filter((x) => x.length > 1);
+  return doubles.length ? ` — prénoms en double : ${doubles.map((x) => x.map((e) => `${e.prenom} ${e.nom[0]}.`).join(" / ")).join(", ")} (l'initiale du nom les départage)` : "";
 }
 
 // ---------------------------------------------------------------------------
@@ -467,11 +529,26 @@ function donneesTableau() {
   if (!ev || reponsesCache.run !== runResultats) return null;
   const n = ev.nb_questions;
   const questions = questionsParRun.get(runResultats) || [];
-  const lignes = synthese(reponsesCache.liste).map((el) => {
+  // Regroupe par élève de la liste (un élève peut s'être connecté sur deux postes)
+  const parCle = new Map();
+  for (const el of synthese(reponsesCache.liste)) {
+    const m = classe.length ? identifier(el.nom) : null;
+    const cle = m ? "m:" + m.id : "e:" + el.id;
+    const x = parCle.get(cle);
+    if (!x) { parCle.set(cle, { ...el, nom: m ? nomOfficiel(m) : el.nom + (classe.length ? " ?" : ""), membre: m }); continue; }
+    for (const [i, c] of el.q) {
+      const d = x.q.get(i);
+      if (!d || (c.trouve && (!d.trouve || c.duree_ms < d.duree_ms))) x.q.set(i, c);
+    }
+  }
+  const absents = classe.filter((m) => !parCle.has("m:" + m.id))
+    .map((m) => ({ id: "absent-" + m.id, nom: nomOfficiel(m), q: new Map(), absent: true }));
+  const lignes = [...parCle.values()].map((el) => {
     let trouvees = 0, total = 0;
     for (let i = 0; i < n; i++) { const c = el.q.get(i); if (c?.trouve) { trouvees++; total += c.duree_ms; } }
     return { ...el, trouvees, total };
-  }).sort((a, b) => b.trouvees - a.trouvees || a.total - b.total || a.nom.localeCompare(b.nom, "fr"));
+  }).sort((a, b) => b.trouvees - a.trouvees || a.total - b.total || a.nom.localeCompare(b.nom, "fr"))
+    .concat(absents.map((a) => ({ ...a, trouvees: 0, total: 0 })));
   return { ev, n, lignes, indices: [...Array(n).keys()], consigne: (i) => questions.find((q) => q.idx === i)?.consigne || "" };
 }
 
@@ -482,7 +559,9 @@ function rendreTableau() {
   if (!d) { zone.innerHTML = runResultats ? "" : '<p class="note">Les résultats apparaîtront ici après la première évaluation.</p>'; return; }
   if (!d.lignes.length) { zone.innerHTML = '<p class="note">Aucune réponse enregistrée pour cette évaluation.</p>'; return; }
   const entetes = d.indices.map((i) => `<th title="${esc(d.consigne(i))}">Q${i + 1}</th>`).join("");
-  const corps = d.lignes.map((el) => `
+  const corps = d.lignes.map((el) => el.absent
+    ? `<tr><td><b>${esc(el.nom)}</b></td><td class="rien" colspan="${d.n + 2}">aucune réponse</td></tr>`
+    : `
     <tr><td><b>${esc(el.nom)}</b></td>
       ${d.indices.map((i) => {
         const c = el.q.get(i);
@@ -505,7 +584,7 @@ function exporterCSV() {
     const l = [el.nom];
     d.indices.forEach((i) => {
       const c = el.q.get(i);
-      l.push(c?.trouve ? sec(c.duree_ms) : "", c ? (c.trouve ? c.tentative_ok : c.tentatives) : 0, c?.trouve ? "oui" : "non");
+      l.push(c?.trouve ? sec(c.duree_ms) : "", c ? (c.trouve ? c.tentative_ok : c.tentatives) : 0, el.absent ? "aucune réponse" : c?.trouve ? "oui" : "non");
     });
     l.push(el.trouvees, sec(el.total));
     return l;

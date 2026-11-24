@@ -34,7 +34,7 @@ function demanderNom(force = false) {
     $("#champ-nom").value = e?.nom || "";
     d.showModal();
     d.onclose = () => {
-      const nom = $("#champ-nom").value.trim().slice(0, 40);
+      const nom = $("#champ-nom").value.trim().replace(/\s+/g, " ").slice(0, 40);
       if (!nom) { if (!eleve()) setTimeout(() => d.showModal(), 50); return; }
       const nouvel = { id: e?.id || crypto.randomUUID(), nom };
       ecrire("eleve", nouvel);

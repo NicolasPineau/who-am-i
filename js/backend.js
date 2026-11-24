@@ -231,6 +231,19 @@ class SupabaseBackend {
     const { error } = await this.client.from("banque").delete().eq("id", id);
     if (error) throw error;
   }
+
+  async classe() {
+    const { data, error } = await this.client.from("eleves").select("*").order("nom").order("prenom");
+    if (error) throw error;
+    return data;
+  }
+  async remplacerClasse(liste) {
+    let r = await this.client.from("eleves").delete().not("id", "is", null);
+    if (r.error) throw r.error;
+    if (!liste.length) return;
+    r = await this.client.from("eleves").insert(liste.map(({ nom, prenom }) => ({ nom, prenom })));
+    if (r.error) throw r.error;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -377,6 +390,8 @@ class LocalBackend {
     return ligne;
   }
   async supprimerQuestion(id) { this.ecrire("demo-banque", this.lire("demo-banque", []).filter((q) => q.id !== id)); }
+  async classe() { return this.lire("demo-classe", []); }
+  async remplacerClasse(liste) { this.ecrire("demo-classe", liste.map(({ nom, prenom }) => ({ id: crypto.randomUUID(), nom, prenom }))); }
 }
 
 function chargerScript(src) {
