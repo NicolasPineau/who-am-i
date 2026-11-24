@@ -91,6 +91,7 @@ function rendre() {
       e.preventDefault();
       try {
         await b.connexion($("#p-email").value, $("#p-mdp").value);
+        ctx.majIdentite?.();
         rendre();
       } catch (err) {
         $("#p-erreur").textContent = err.message;
@@ -104,7 +105,7 @@ function rendre() {
     <div class="carte" id="p-resultats"></div>
     <div class="carte" id="p-banque"></div>
     <p class="note">Connecté en tant que prof${b.type === "local" ? " (démo)" : ""}. <button class="btn-lien" id="p-deconnexion">Se déconnecter</button></p>`;
-  $("#p-deconnexion").addEventListener("click", async () => { await b.deconnexion(); modeAffiche = null; rendre(); });
+  $("#p-deconnexion").addEventListener("click", async () => { await b.deconnexion(); modeAffiche = null; ctx.majIdentite?.(); rendre(); });
   rendreSeance();
   chargerClasse().then(() => { rendreDirect(); rendreTableau(); });
   rendreResultats();

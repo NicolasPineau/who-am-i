@@ -31,6 +31,7 @@ class AucunBackend {
   onEtat() {}
   onPresence() {}
   rejoindre() {}
+  quitter() {}
   estProf() { return false; }
 }
 
@@ -107,6 +108,10 @@ class SupabaseBackend {
   rejoindre(eleve) {
     this.eleve = { eleve_id: eleve.id, nom: eleve.nom };
     if (this.canalClasse) this.canalClasse.track(this.eleve).catch(() => {});
+  }
+  quitter() {
+    this.eleve = null;
+    if (this.canalClasse) this.canalClasse.untrack().catch(() => {});
   }
 
   async getEvaluation(id) {
@@ -277,6 +282,7 @@ class LocalBackend {
   recevoir(m) {
     if (m.type === "etat") this.diffuser();
     if (m.type === "present") { this.presents.set(m.eleve.id, { ...m.eleve, t: m.t }); this.diffuserPresence(); }
+    if (m.type === "parti") { this.presents.delete(m.id); this.diffuserPresence(); }
     if (m.type === "qui" && this.eleve) this.canal.postMessage({ type: "present", eleve: this.eleve, t: Date.now() });
   }
   diffuserPresence() {
@@ -296,6 +302,10 @@ class LocalBackend {
   onEtat(f) { this.ecouteursEtat.push(f); }
   onPresence(f) { this.ecouteursPresence.push(f); }
   rejoindre(eleve) { this.eleve = eleve; this.canal.postMessage({ type: "present", eleve, t: Date.now() }); }
+  quitter() {
+    if (this.eleve) this.canal.postMessage({ type: "parti", id: this.eleve.id });
+    this.eleve = null;
+  }
   async getEvaluation(id) { return this.lire("demo-evaluations", []).find((e) => e.id === id) || null; }
   questionSync(run, idx) { return this.lire("demo-questions", []).find((q) => q.run_id === run && q.idx === idx) || null; }
   async question(run, idx) {

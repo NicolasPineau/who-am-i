@@ -32,6 +32,7 @@ function demanderNom(force = false) {
     if (e && !force) return ok(e);
     const d = $("#popin-nom");
     $("#champ-nom").value = e?.nom || "";
+    $("#btn-oublier").hidden = !e;
     d.showModal();
     d.onclose = () => {
       const nom = $("#champ-nom").value.trim().replace(/\s+/g, " ").slice(0, 40);
@@ -44,10 +45,24 @@ function demanderNom(force = false) {
     };
   });
 }
+// Oublie le nom d'élève enregistré dans ce navigateur (ex. après un test)
+function oublierEleve() {
+  try { localStorage.removeItem("eleve"); } catch { /* rien */ }
+  ctx.backend.quitter();
+  afficherEleve();
+}
+
+// Un poste connecté en prof n'apparaît jamais comme élève dans la classe.
+function majIdentite() {
+  if (ctx.backend.estProf()) ctx.backend.quitter();
+  else if (eleve()) ctx.backend.rejoindre(eleve());
+  afficherEleve();
+}
+
 function afficherEleve() {
   const e = eleve();
   const b = $("#btn-eleve");
-  const visible = e && ctx.backend.type !== "aucun";
+  const visible = e && ctx.backend.type !== "aucun" && !ctx.backend.estProf();
   b.hidden = !visible;
   if (visible) b.textContent = "👤 " + e.nom;
 }
@@ -249,7 +264,7 @@ async function verifierReponse(sql, res, erreur) {
   const retour = $("#q-retour");
   if (s.trouve) return;
   if (tempsRestant() <= 0) { retour.className = "retour ko"; retour.textContent = "⏱ Temps écoulé pour cette question."; return; }
-  const moi = eleve();
+  const moi = ctx.backend.estProf() ? null : eleve();
   if (!moi) {
     retour.className = "retour";
     retour.textContent = ctx.backend.estProf() ? "(Vue prof : tes requêtes ne sont pas enregistrées.)" : "Donne ton prénom pour participer.";
@@ -483,6 +498,11 @@ async function demarrer() {
   });
   document.querySelectorAll(".onglets button").forEach((b) => b.addEventListener("click", () => ouvrirOnglet(b.dataset.onglet)));
   $("#btn-eleve").addEventListener("click", () => demanderNom(true));
+  $("#btn-oublier").addEventListener("click", () => {
+    $("#popin-nom").onclose = null;
+    $("#popin-nom").close();
+    oublierEleve();
+  });
 
   executerRequete({ evaluer: false });
 
@@ -491,7 +511,8 @@ async function demarrer() {
   rendreMemo($("#onglet-memo"), ctx);
   initProf($("#onglet-prof"), ctx);
   afficherEleve();
-  if (eleve()) ctx.backend.rejoindre(eleve());
+  ctx.majIdentite = majIdentite;
+  majIdentite();
   ctx.backend.onPresence((l) => { ctx.presents = l; ctx.ecouteurs.forEach((f) => f(ctx.etat, "presence")); });
   ctx.backend.onEtat((e) => appliquerEtat(e));
   try { await appliquerEtat(await ctx.backend.getEtat()); } catch (e) { console.error(e); }
