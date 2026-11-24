@@ -354,9 +354,13 @@ function afficherQuestion() {
   }
   if (cle !== questionAffichee) {
     questionAffichee = cle;
-    $("#requete").value = REQUETE_DEFAUT;
+    // Prompt vide à chaque question (sinon la 1re réponse serait déjà écrite) ;
+    // on montre quand même toutes les personnes.
+    $("#requete").value = "";
     curseur = null;
-    executerRequete({ evaluer: false });
+    afficherResultat(M.executer(REQUETE_DEFAUT));
+    afficherMessage("info", "Écris ta requête, puis clique sur OK.");
+    $("#requete").focus();
   }
   rafraichirChrono();
 }
@@ -456,7 +460,13 @@ async function demarrer() {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); executerRequete(); }
   });
   $("#btn-ok").addEventListener("click", () => executerRequete());
-  $("#btn-reinit").addEventListener("click", () => { t.value = REQUETE_DEFAUT; curseur = null; executerRequete({ evaluer: false }); });
+  $("#btn-reinit").addEventListener("click", () => {
+    curseur = null;
+    // Pendant une évaluation, on vide simplement le prompt (pas de requête toute faite)
+    if (ctx.etat.mode === "evaluation") { t.value = ""; t.focus(); return; }
+    t.value = REQUETE_DEFAUT;
+    executerRequete({ evaluer: false });
+  });
   $("#vue-grille").addEventListener("click", () => changerVue("grille"));
   $("#vue-liste").addEventListener("click", () => changerVue("liste"));
   $("#resultat").addEventListener("click", (e) => {
